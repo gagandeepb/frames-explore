@@ -36,10 +36,14 @@ loadPurchases = inCoreAoS purchasesStream
 someFunc :: IO ()
 someFunc = putStrLn "someFunc"
 
+-- Delete any purchase of legal fees.
 loadFilteredPurchase :: IO (Frame Purchases)
 loadFilteredPurchase =
-  inCoreAoS $ purchasesStream >-> P.filter (\p -> rget @Item p /= Field "legal fees (1 hour)")
+  inCoreAoS $
+    purchasesStream
+    >-> P.filter (\p -> rget @Item p /= Field "legal fees (1 hour)")
 
+-- Merge price and purchase data.
 joinPricePurchase = do
   price <- loadPrices
   fpurchase <- loadFilteredPurchase
@@ -51,28 +55,47 @@ emptyColumn :: Int -> [Record '[MoneySpent]]
 emptyColumn nrows =
   replicate nrows (0 &: RNil)
 
+-- Compute a new column, "money-spent" = units-bought price.
 addNewColumn = do
   joined <- joinPricePurchase
   let nrows = F.length joined
   let zipped = zipFrames joined (toFrame $ emptyColumn nrows)
-  return $ fmap (\r -> rput (Field @"money-spent" $ mult (rget @UnitsBought r) (rget @Price r)) r) zipped
+  return $
+    fmap (\r ->
+            rput (Field @"money-spent" $
+                    mult (rget @UnitsBought r) (rget @Price r)
+                  ) r
+          ) zipped
 
 mult :: Num t => ElField '(s1, t) -> ElField '(s2, t) -> t
 mult (Field x) (Field y) = (x*y)
 
+-- Group by person.
 grouped = do
   a <- addNewColumn
   let persons = F.toList $ view person <$> a
   let uniquePersons = DL.nub persons
-  return $ map (\up -> (up, filterFrame (\r -> (rget @Person r) == Field @"person" up) a)) uniquePersons
+  return $
+    map (\up ->
+          (
+            up
+          , filterFrame (\r -> (rget @Person r) == Field @"person" up) a
+          )
+        ) uniquePersons
 
 printGroup = do
   g <- grouped
   mapM_ (\(a, r) -> do print a;  (mapM_ print  r) ) g
 
+-- Within each group: Sort by date in increasing order.
 sortedGroups = do
   gs <- grouped
-  let gs' = map (\(a, rs) -> (a, DL.sortOn (\r -> unField $ rget @Date r) (F.toList rs))) gs
+  let gs' = map (\(a, rs) ->
+                    (
+                      a
+                    , DL.sortOn (\r -> unField $ rget @Date r) (F.toList rs)
+                    )
+                ) gs
   return gs'
 
 unField :: ElField '(s, t) -> t
@@ -87,12 +110,13 @@ createColumnAccumulated rs =
               map (\r ->
                       Field @"accumulated-spending" r :& RNil)
                   (
-                    DL.scanl1
+                    DL.scanl1  -- this might be lazy like foldl; can be improved
                       (+)
                       (extractMoneySpent rs)
                   )
           )
 
+-- Compute a new column, "accumulated-spending" = running total of money spent.
 addNewColumnInGroups = do
   sorteds <- sortedGroups
   let zipped' = map (\(a, rs) ->
@@ -101,8 +125,9 @@ addNewColumnInGroups = do
                         , zipFrames (toFrame rs) (createColumnAccumulated rs)
                         )
                     ) sorteds
-  return $ zipped'
+  return zipped'
 
+-- Keep the last row with a date no greater than 6; drop all others.
 dropAccordingToDate = do
   ns <- addNewColumnInGroups
   return $
@@ -117,8 +142,11 @@ dropAccordingToDate = do
         )
       ns
 
+-- Across groups, compute the mean of accumulated spending.
 meanAcrossGroups = do
   dropped <- dropAccordingToDate
-  let temp = map (\(_, r) -> (fromIntegral . unField) $ rget @AccumulatedSpending r) dropped
+  let temp = map (\(_, r) ->
+                    (fromIntegral . unField) $ rget @AccumulatedSpending r)
+                  dropped
   let average = (/) <$> L.sum <*> L.genericLength
   return $ L.fold average temp
