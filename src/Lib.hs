@@ -33,9 +33,6 @@ purchasesStream = readTableOpt purchasesParser "data/purchases.csv"
 loadPurchases :: IO (Frame Purchases)
 loadPurchases = inCoreAoS purchasesStream
 
-someFunc :: IO ()
-someFunc = putStrLn "someFunc"
-
 -- Delete any purchase of legal fees.
 loadFilteredPurchase :: IO (Frame Purchases)
 loadFilteredPurchase =
